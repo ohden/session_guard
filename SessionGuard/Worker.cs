@@ -34,8 +34,17 @@ public class Worker : BackgroundService
     private void OnConfigChanged(SessionConfig newConfig)
     {
         _logger.LogInformation("Configuration changed. Updating SessionManager...");
-        _logger.LogInformation("New Configuration - LogoutStartTime: {start}, LogoutEndTime: {end}, MaxUptime: {max}h",
-            newConfig.LogoutStartTime, newConfig.LogoutEndTime, newConfig.MaxContinuousUptime);
+        
+        if (newConfig.LogoutTimeWindows != null && newConfig.LogoutTimeWindows.Count > 0)
+        {
+            _logger.LogInformation("Logout time windows updated: {count} window(s)", newConfig.LogoutTimeWindows.Count);
+            foreach (var window in newConfig.LogoutTimeWindows)
+            {
+                _logger.LogInformation("  - {startTime}～{endTime}: {description}",
+                    window.StartTime, window.EndTime, window.Description);
+            }
+        }
+        _logger.LogInformation("MaxUptime: {max}h", newConfig.MaxContinuousUptime);
         
         // セッションマネージャーを再初期化（新しい設定で）
         // 既存のセッション情報は保持される
@@ -46,8 +55,18 @@ public class Worker : BackgroundService
         var config = _configMonitor.CurrentValue;
         
         _logger.LogInformation("SessionGuard service started at {time}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-        _logger.LogInformation("Configuration - LogoutStartTime: {start}, LogoutEndTime: {end}, MaxUptime: {max}h",
-            config.LogoutStartTime, config.LogoutEndTime, config.MaxContinuousUptime);
+        
+        if (config.LogoutTimeWindows != null && config.LogoutTimeWindows.Count > 0)
+        {
+            _logger.LogInformation("Configured logout time windows: {count}", config.LogoutTimeWindows.Count);
+            foreach (var window in config.LogoutTimeWindows)
+            {
+                _logger.LogInformation("  - {startTime}～{endTime}: {description}",
+                    window.StartTime, window.EndTime, window.Description);
+            }
+        }
+        _logger.LogInformation("MaxContinuousUptime: {max}h, CheckInterval: {interval}s",
+            config.MaxContinuousUptime, config.CheckInterval);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -75,7 +94,11 @@ public class Worker : BackgroundService
                         "ご使用のセッションが終了します。\n" +
                         "設定された条件に基づいてログアウトします。"
                     );
-                    break; // ログアウト後、サービスを停止
+                    
+                    // ログアウト後もセッション監視を継続（再ログイン時に判定するため）
+                    // セッション情報をリセット
+                    _sessionManager = new SessionManager(currentConfig, _logger);
+                    _logger.LogInformation("SessionManager reset. Waiting for new session logon...");
                 }
 
                 // 設定された間隔で待機

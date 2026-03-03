@@ -1,6 +1,154 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace SessionGuard;
+
+/// <summary>
+/// Windowsセッション管理用P/Invokeラッパー
+/// </summary>
+public static class WindowsSessionHelper
+{
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSEnumerateSessions(IntPtr hServer, uint reserved, uint version, out IntPtr ppSessionInfo, out uint pCount);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern void WTSFreeMemory(IntPtr pMemory);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSLogoffSession(IntPtr hServer, uint sessionId, bool bWait);
+
+    [DllImport("wtsapi32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern bool WTSQuerySessionInformation(IntPtr hServer, uint sessionId, WtsInfoClass wtsInfoClass, 
+        out IntPtr ppBuffer, out uint pBytesReturned);
+
+    // セッション情報の構造体
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WTS_SESSION_INFO
+    {
+        public uint SessionId;
+        public IntPtr pWinStationName;
+        public WTS_CONNECTSTATE_CLASS State;
+    }
+
+    // セッション状態
+    private enum WTS_CONNECTSTATE_CLASS
+    {
+        Active,
+        Connected,
+        ConnectQuery,
+        Shadow,
+        Disconnected,
+        Idle,
+        Listen,
+        Reset,
+        Down,
+        Init
+    }
+
+    // セッション情報クラス
+    private enum WtsInfoClass
+    {
+        InitialProgram,
+        ApplicationName,
+        WorkingDirectory,
+        OemId,
+        LogonUser,
+        LogonDomain,
+        LogonTime,
+        LogoffTime,
+        ErrorTime,
+        SessionState,
+        UserFlags
+    }
+
+    private static readonly IntPtr WTS_CURRENT_SERVER_HANDLE = IntPtr.Zero;
+
+    /// <summary>
+    /// アクティブなセッションIDを取得
+    /// </summary>
+    public static uint? GetActiveSessionId()
+    {
+        uint count = 0;
+        IntPtr pSessionInfo = IntPtr.Zero;
+
+        try
+        {
+            if (WTSEnumerateSessions(WTS_CURRENT_SERVER_HANDLE, 0, 1, out pSessionInfo, out count))
+            {
+                int dataSize = Marshal.SizeOf(typeof(WTS_SESSION_INFO));
+
+                for (int i = 0; i < count; i++)
+                {
+                    IntPtr sessionInfoPtr = new IntPtr(pSessionInfo.ToInt64() + (dataSize * i));
+                    WTS_SESSION_INFO sessionInfo = (WTS_SESSION_INFO)Marshal.PtrToStructure(sessionInfoPtr, typeof(WTS_SESSION_INFO));
+
+                    // Activeなセッションを検索
+                    if (sessionInfo.State == WTS_CONNECTSTATE_CLASS.Active)
+                    {
+                        return sessionInfo.SessionId;
+                    }
+                }
+            }
+
+            return null;
+        }
+        finally
+        {
+            if (pSessionInfo != IntPtr.Zero)
+                WTSFreeMemory(pSessionInfo);
+        }
+    }
+
+    /// <summary>
+    /// セッションをログオフ
+    /// </summary>
+    public static bool LogoffSession(uint sessionId)
+    {
+        return WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, sessionId, false);
+    }
+
+    /// <summary>
+    /// アクティブセッションのログイン時刻を取得
+    /// </summary>
+    public static DateTime? GetSessionLogonTime()
+    {
+        var sessionId = GetActiveSessionId();
+        if (!sessionId.HasValue)
+            return null;
+
+        try
+        {
+            if (WTSQuerySessionInformation(WTS_CURRENT_SERVER_HANDLE, sessionId.Value, WtsInfoClass.LogonTime,
+                out IntPtr pBuffer, out uint bytesReturned))
+            {
+                try
+                {
+                    // FILETIME構造体を取得
+                    if (bytesReturned >= 8)
+                    {
+                        long fileTime = Marshal.ReadInt64(pBuffer);
+                        if (fileTime > 0)
+                        {
+                            // FILETIMEをDateTimeに変換
+                            return DateTime.FromFileTime(fileTime);
+                        }
+                    }
+                    return null;
+                }
+                finally
+                {
+                    WTSFreeMemory(pBuffer);
+                }
+            }
+            return null;
+        }
+        catch (Exception ex)
+        {
+            // エラーログはLogoutHandlerで記録されるため、ここではスローしない
+            return null;
+        }
+    }
+}
 
 /// <summary>
 /// システムのログアウト処理を実行するクラス
@@ -23,33 +171,28 @@ public class LogoutHandler
         {
             _logger.LogInformation("Attempting to logout user...");
 
-            // Windows コマンドでログアウト実行
-            // logoff コマンドは現在のセッションをログアウト
-            var processInfo = new ProcessStartInfo
+            // アクティブなセッションIDを取得（WTSApi32を使用）
+            var sessionId = WindowsSessionHelper.GetActiveSessionId();
+            
+            if (sessionId.HasValue)
             {
-                FileName = "cmd.exe",
-                Arguments = "/c logoff",
-                RedirectStandardOutput = false,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            using (var process = Process.Start(processInfo))
-            {
-                if (process != null)
+                _logger.LogInformation("Active session found: Session ID {sessionId}", sessionId.Value);
+                
+                // WTSLogoffSessionを使用してセッションをログオフ
+                bool logoffResult = WindowsSessionHelper.LogoffSession(sessionId.Value);
+                
+                if (logoffResult)
                 {
-                    // プロセスの終了を待つ（最大5秒）
-                    var completed = process.WaitForExit(5000);
-                    if (completed)
-                    {
-                        _logger.LogInformation("User logout command executed successfully.");
-                    }
-                    else
-                    {
-                        _logger.LogWarning("Logout command did not complete within timeout period.");
-                        process.Kill();
-                    }
+                    _logger.LogInformation("Session {sessionId} logoff command successfully issued.", sessionId.Value);
                 }
+                else
+                {
+                    _logger.LogError("Failed to logoff session {sessionId}. Error: {error}", sessionId.Value, Marshal.GetLastWin32Error());
+                }
+            }
+            else
+            {
+                _logger.LogWarning("No active session found to logoff.");
             }
 
             await Task.CompletedTask;
@@ -74,7 +217,8 @@ public class LogoutHandler
             {
                 FileName = "cmd.exe",
                 Arguments = $"/c msg * \"{reason}\"",
-                RedirectStandardOutput = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };

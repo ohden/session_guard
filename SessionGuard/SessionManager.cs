@@ -13,7 +13,7 @@ public class SessionManager
     public SessionManager(SessionConfig config, ILogger logger)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _sessionInfo = new SessionInfo();
+        _sessionInfo = new SessionInfo(logger);
         _sessionInfo.Initialize();
     }
 
@@ -59,27 +59,44 @@ public class SessionManager
     /// </summary>
     private bool IsWithinLogoutTimeWindow(SessionConfig config)
     {
-        if (!config.EnableLogout)
+        if (!config.EnableLogout || config.LogoutTimeWindows == null || config.LogoutTimeWindows.Count == 0)
             return false;
 
         try
         {
             var now = DateTime.Now.TimeOfDay;
-            var startTime = TimeSpan.Parse(config.LogoutStartTime);
-            var endTime = TimeSpan.Parse(config.LogoutEndTime);
 
-            // 例: LogoutStartTime = "18:00", LogoutEndTime = "09:00"
-            // この場合、18:00 以降、または 09:00 より前であればログアウト
-            if (startTime > endTime)
+            // 設定されている全ての時間帯をチェック
+            foreach (var window in config.LogoutTimeWindows)
             {
-                // 日をまたぐ場合
-                return now >= startTime || now < endTime;
+                var startTime = TimeSpan.Parse(window.StartTime);
+                var endTime = TimeSpan.Parse(window.EndTime);
+
+                // 時間帯の判定
+                bool isInWindow;
+                if (startTime > endTime)
+                {
+                    // 日をまたぐ場合 (例: 18:00～09:00)
+                    isInWindow = now >= startTime || now < endTime;
+                }
+                else
+                {
+                    // 日をまたがない場合 (例: 12:00～13:00)
+                    isInWindow = now >= startTime && now < endTime;
+                }
+
+                // 任意の時間帯に該当したらログアウト対象
+                if (isInWindow)
+                {
+                    if (!string.IsNullOrEmpty(window.Description))
+                    {
+                        _logger.LogWarning("Current time is within logout time window: {description}", window.Description);
+                    }
+                    return true;
+                }
             }
-            else
-            {
-                // 日をまたがない場合
-                return now >= startTime && now < endTime;
-            }
+
+            return false;
         }
         catch (Exception ex)
         {
