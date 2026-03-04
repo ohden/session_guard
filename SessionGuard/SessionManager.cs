@@ -123,12 +123,24 @@ public class SessionManager
     public void LogStatus()
     {
         var currentUptime = _sessionInfo.CurrentUptimeHours;
+        var accumulated = _sessionInfo.AccumulatedUptimeHours;
+        var currentSessionElapsed = DateTime.Now - _sessionInfo.StartTime;
         var startTime = _sessionInfo.StartTime;
 
         _logger.LogInformation(
-            "Session Status - StartTime: {startTime}, CurrentUptime: {uptime:F2}h",
+            "Session Status - StartTime: {startTime}, Accumulated: {accumulated:F2}h, Current Session: {currentSession:F2}h, Total Uptime: {uptime:F2}h",
             startTime.ToString("yyyy-MM-dd HH:mm:ss"),
+            accumulated,
+            currentSessionElapsed.TotalHours,
             currentUptime
         );
+    }
+
+    /// <summary>
+    /// ログアウト時に現在のセッション稼働時間を累積し、新しいセッション開始時刻をリセット
+    /// </summary>
+    public void AccumulateUptimeAndReset()
+    {
+        _sessionInfo.AccumulateAndResetCurrentSession();
     }
 }

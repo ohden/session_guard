@@ -95,10 +95,10 @@ public class Worker : BackgroundService
                         "設定された条件に基づいてログアウトします。"
                     );
                     
-                    // ログアウト後もセッション監視を継続（再ログイン時に判定するため）
-                    // セッション情報をリセット
-                    _sessionManager = new SessionManager(currentConfig, _logger);
-                    _logger.LogInformation("SessionManager reset. Waiting for new session logon...");
+                    // ログアウト後、稼働時間を累積して新しいセッション開始時刻をリセット
+                    // サービスは継続稼働し、再ログイン時に判定を再開
+                    _sessionManager.AccumulateUptimeAndReset();
+                    _logger.LogInformation("Session uptime accumulated. Waiting for new session logon...");
                 }
 
                 // 設定された間隔で待機

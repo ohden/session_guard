@@ -34,11 +34,11 @@ public class SessionConfig
     public List<LogoutTimeWindow> LogoutTimeWindows { get; set; } = new();
 
     /// <summary>
-    /// 最大連続稼働時間（時間単位）
+    /// 最大連続稼働時間（時間単位、小数対応）
     /// この時間を超えて稼働している場合、ログアウトする
-    /// 例: 1 (1時間)
+    /// 例: 1 (1時間), 0.5 (30分), 1.5 (1時間30分)
     /// </summary>
-    public int MaxContinuousUptime { get; set; } = 8;
+    public double MaxContinuousUptime { get; set; } = 8;
 
     /// <summary>
     /// ログアウト実行を有効にするかどうか

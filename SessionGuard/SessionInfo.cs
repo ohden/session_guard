@@ -23,14 +23,21 @@ public class SessionInfo
     public DateTime LastResetTime { get; set; }
 
     /// <summary>
+    /// 同じ日内での累計稼働時間（時間単位）
+    /// ログアウト→ログインしても、日付が変わるまで累積される
+    /// </summary>
+    public double AccumulatedUptimeHours { get; set; } = 0.0;
+
+    /// <summary>
     /// 現在の連続稼働時間（時間単位）
+    /// = 累計稼働時間 + 現在のセッション稼働時間
     /// </summary>
     public double CurrentUptimeHours
     {
         get
         {
-            var elapsed = DateTime.Now - StartTime;
-            return elapsed.TotalHours;
+            var currentSessionElapsed = DateTime.Now - StartTime;
+            return AccumulatedUptimeHours + currentSessionElapsed.TotalHours;
         }
     }
 
@@ -52,27 +59,36 @@ public class SessionInfo
     }
 
     /// <summary>
-    /// セッション情報を初期化（実際のWindowsセッションログイン時刻を取得）
+    /// セッション情報を初期化（サービス起動時刻を基準に設定）
     /// </summary>
     public void Initialize()
     {
-        // まずWindowsの実際のセッションログイン時刻を取得
-        var sessionLogonTime = WindowsSessionHelper.GetSessionLogonTime();
-        
-        if (sessionLogonTime.HasValue)
-        {
-            StartTime = sessionLogonTime.Value;
-            _logger?.LogInformation("Session start time obtained from Windows API: {startTime}", StartTime.ToString("yyyy-MM-dd HH:mm:ss"));
-        }
-        else
-        {
-            // Windows APIから取得できない場合は、アプリケーション起動時刻を使用
-            StartTime = DateTime.Now;
-            _logger?.LogWarning("Could not get session logon time from Windows API. Using application start time instead.");
-        }
+        // サービス起動時刻を基準時刻として設定
+        // これにより、サービス起動後は経過時間が0からカウント開始される
+        StartTime = DateTime.Now;
+        _logger?.LogInformation("Session start time set to service startup time: {startTime}", StartTime.ToString("yyyy-MM-dd HH:mm:ss"));
 
         StartDate = DateOnly.FromDateTime(DateTime.Now);
         LastResetTime = DateTime.Now;
+        // AccumulatedUptimeHours はリセットしない（ログイン時に保持）
+    }
+
+    /// <summary>
+    /// ログアウト時に現在のセッション稼働時間を累積し、新しいセッションをリセット
+    /// </summary>
+    public void AccumulateAndResetCurrentSession()
+    {
+        var currentSessionElapsed = DateTime.Now - StartTime;
+        AccumulatedUptimeHours += currentSessionElapsed.TotalHours;
+
+        _logger?.LogInformation(
+            "Session accumulated. Previous session: {previousSession:F2}h, Total accumulated: {total:F2}h",
+            currentSessionElapsed.TotalHours,
+            AccumulatedUptimeHours
+        );
+
+        // 新しいセッション開始時刻をリセット
+        StartTime = DateTime.Now;
     }
 
     /// <summary>
@@ -83,5 +99,8 @@ public class SessionInfo
         StartDate = DateOnly.FromDateTime(DateTime.Now);
         StartTime = DateTime.Now;
         LastResetTime = DateTime.Now;
+        AccumulatedUptimeHours = 0.0;  // 日付が変わったら累積時間もリセット
+
+        _logger?.LogInformation("Day changed. Session and accumulated uptime reset.");
     }
 }
