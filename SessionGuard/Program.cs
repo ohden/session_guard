@@ -1,4 +1,5 @@
 using SessionGuard;
+using Serilog;
 
 var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
 if (!Directory.Exists(logDir))
@@ -6,23 +7,28 @@ if (!Directory.Exists(logDir))
     Directory.CreateDirectory(logDir);
 }
 
+// Serilogの設定
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Debug()
+    .WriteTo.File(
+        path: Path.Combine(logDir, "SessionGuard-.log"),
+        rollingInterval: RollingInterval.Day,
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}",
+        fileSizeLimitBytes: 10_000_000, // 10MB
+        retainedFileCountLimit: 7 // 7日間保持
+    )
+    .CreateLogger();
+
 var builder = Host.CreateApplicationBuilder(args);
 
 // セッション設定をオプションとして登録
-// CreateApplicationBuilder はデフォルトで appsettings.json の変更監視を有効にしている
 builder.Services.Configure<SessionConfig>(builder.Configuration.GetSection("SessionConfig"));
 
 // ロギング設定
 builder.Services.AddLogging(options =>
 {
     options.ClearProviders();
-    options.AddConsole();
-    options.AddEventLog();
-    options.AddSimpleConsole(config =>
-    {
-        config.IncludeScopes = true;
-        config.TimestampFormat = "yyyy-MM-dd HH:mm:ss ";
-    });
+    options.AddSerilog(Log.Logger);
 });
 
 // サービスに登録
