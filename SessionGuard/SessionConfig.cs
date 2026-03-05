@@ -49,4 +49,12 @@ public class SessionConfig
     /// ステータス確認間隔（秒単位）
     /// </summary>
     public int CheckInterval { get; set; } = 60;
+
+    /// <summary>
+    /// 強制ログアウト対象ユーザーのリスト
+    /// ここに記載されたユーザーのみ強制ログアウト判定の対象になります
+    /// 例: ["user1", "user2", "DOMAIN\\user3"]
+    /// 空の場合はすべてのユーザーが対象になります
+    /// </summary>
+    public List<string> TargetUsers { get; set; } = new();
 }

@@ -114,7 +114,12 @@ public class SessionManager
             return false;
 
         var currentUptime = _sessionInfo.CurrentUptimeHours;
-        return currentUptime >= config.MaxContinuousUptime;
+        var exceeded = currentUptime >= config.MaxContinuousUptime;
+
+        _logger.LogInformation("Uptime check - Current: {current:F6}h, Max: {max:F6}h, Exceeded: {exceeded}",
+            currentUptime, config.MaxContinuousUptime, exceeded);
+
+        return exceeded;
     }
 
     /// <summary>

@@ -169,7 +169,12 @@ Get-EventLog -LogName Application -Source "SessionGuard" -Newest 5 | ForEach-Obj
     ],
     "MaxContinuousUptime": 1,
     "EnableLogout": true,
-    "CheckInterval": 5
+    "CheckInterval": 5,
+    "TargetUsers": [
+      "user1",
+      "user2",
+      "DOMAIN\\user3"
+    ]
   }
 }
 ```
@@ -182,9 +187,10 @@ Get-EventLog -LogName Application -Source "SessionGuard" -Newest 5 | ForEach-Obj
 | `LogoutTimeWindows[].StartTime` | string | 時間帯開始時刻 (HH:mm形式) |
 | `LogoutTimeWindows[].EndTime` | string | 時間帯終了時刻 (HH:mm形式) |
 | `LogoutTimeWindows[].Description` | string | 時間帯の説明 (ログ出力用) |
-| `MaxContinuousUptime` | int | 最大連続稼働時間（時間単位） |
+| `MaxContinuousUptime` | double | 最大連続稼働時間（時間単位、小数対応） |
 | `EnableLogout` | bool | ログアウト機能を有効にするか |
 | `CheckInterval` | int | ログアウト条件の確認間隔（秒単位） |
+| `TargetUsers` | array | 強制ログアウト対象ユーザーのリスト（空の場合はすべてのユーザーが対象） |
 
 #### 複数時間帯設定の例
 
