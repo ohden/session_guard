@@ -65,16 +65,55 @@ dotnet build -c Release
   dotnet build -c Release
   ```
 
-### 2. Windows サービスとしてインストール
+### 2. 単一ファイル Exe の発行（Publishing）
 
-ビルドが完了したら、サービスをインストールして起動します。
+ビルド後、すべての依存関係を含むシングルファイル実行可能ファイル（exe）を生成します。
+
+```powershell
+# プロジェクトディレクトリへ移動
+cd C:\wk\repos\SessionGuard\SessionGuard
+
+# 単一ファイル exe の発行
+dotnet publish -c Release
+```
+
+**発行結果：**
+- 発行後、`bin\Release\net10.0\win-x64\publish\` ディレクトリに以下のファイルが生成されます：
+  - `SessionGuard.exe` (3.8 MB) - すべての DLL を含む単一ファイル実行可能ファイル
+  - `appsettings.json` - 本番用設定ファイル
+  - `SessionGuard.pdb` - デバッグシンボル（オプション）
+
+**単一ファイル exe の利点：**
+- 配布時に exe + 設定ファイルのみで OK（依存関係の DLL が不要）
+- サーバーへのデプロイが簡単
+- Windows サービスとして安定稼働
+
+**発行ファイルの配置：**
+```powershell
+# 発行ファイルをサービス実行位置にコピー
+Copy-Item "bin\Release\net10.0\win-x64\publish\SessionGuard.exe" "bin\Release\net10.0\" -Force
+Copy-Item "bin\Release\net10.0\win-x64\publish\appsettings.json" "bin\Release\net10.0\" -Force
+```
+
+**サービス実行ディレクトリ構造：**
+```
+C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0\
+├── SessionGuard.exe          ← 単一ファイル exe
+├── appsettings.json          ← 設定ファイル
+├── SessionGuard.pdb          ← デバッグシンボル
+└── logs/                      ← ログディレクトリ（実行時に生成）
+```
+
+### 3. Windows サービスとしてインストール
+
+発行が完了したら、サービスをインストールして起動します。
 
 ```powershell
 # リリース版ディレクトリへ移動
 cd C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0
 
-# サービスをインストール（このディレクトリから実行）
-.\SessionGuard.exe --register-service
+# sc.exe を使ってサービスをインストール
+sc.exe create SessionGuard binPath= "C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0\SessionGuard.exe" start= auto
 
 # サービスを起動
 Start-Service -Name SessionGuard
@@ -84,9 +123,9 @@ Get-Service -Name SessionGuard
 ```
 
 **サービス登録とは：**
-- `--register-service` コマンドにより、SessionGuardが Windows サービスとして登録されます
-- サービス名は `SessionGuard` です
-- 登録後、Windows のサービス管理システムで自動的に起動・停止の管理が可能になります
+- `sc.exe create` コマンドにより、SessionGuardが Windows サービスとして登録されます
+- `binPath=` に exe の絶対パスを指定
+- `start= auto` により、OS 起動時に自動起動するように設定
 
 **起動確認：**
 出力例：
@@ -100,7 +139,7 @@ Running  SessionGuard       SessionGuard
 - `appsettings.json` は `SessionGuard.exe` と同じディレクトリにあれば、自動的に読み込まれます
 - サービス起動時に設定ファイルを確認して、設定に基づいいてログアウト判定を開始します
 
-### 3. Windows サービスのアンインストール
+### 4. Windows サービスのアンインストール
 
 サービスを削除する場合は、以下のコマンドを実行します。
 
@@ -108,14 +147,7 @@ Running  SessionGuard       SessionGuard
 # サービスを停止
 Stop-Service -Name SessionGuard
 
-# サービスを削除（リリース版ディレクトリから実行）
-cd C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0
-.\SessionGuard.exe --unregister-service
-```
-
-**代替方法**（`--unregister-service` がない場合）：
-
-```powershell
+# sc.exe を使ってサービスを削除
 sc.exe delete SessionGuard
 ```
 
@@ -127,24 +159,43 @@ Get-Service -Name SessionGuard
 
 ## 動作確認
 
-サービスが正常に動作しているか確認するには、Windows イベントログを確認します。
+サービスが正常に動作しているか確認するには、ログファイルを確認します。
 
 ```powershell
-# SessionGuard の最新ログを確認（最新10件）
-Get-EventLog -LogName Application -Source "SessionGuard" -Newest 10 | Format-Table -AutoSize
+# ログディレクトリへ移動
+cd C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0\logs
 
-# より詳細なメッセージを表示
-Get-EventLog -LogName Application -Source "SessionGuard" -Newest 5 | ForEach-Object { "$($_.TimeGenerated) | $($_.Message)" }
+# ログファイルの最新エントリを確認
+Get-Content -Path "SessionGuard-*.log" -Tail 50
+
+# リアルタイムでログを監視
+Get-Content -Path "SessionGuard-*.log" -Wait
 ```
 
+**ログファイルの場所：**
+- ログは `bin\Release\net10.0\logs\` ディレクトリに日ごとのファイルで保存されます
+- ファイル形式：`SessionGuard-YYYYMMDD.log`（例：`SessionGuard-20260305.log`）
+- 7日間のログが保持されます（古いログは自動削除）
+
 **ログの見方：**
-- **Information** レベル：サービスの起動・セッション状態の通常ログ
-- **Warning** レベル：ログアウト条件が検出された
-- **Error** レベル：ログアウト実行時のエラー
+```
+2026-03-05 22:19:30 [INF] ServiceGuard service started
+2026-03-05 22:19:30 [WRN] Session user changed from '[no user]' to 's1n'. Resetting SessionManager.
+2026-03-05 22:19:30 [INF] Session Status - StartTime: 2026-03-05 22:19:30, Current Session: 0.00h, Total Uptime: 0.00h
+```
+
+**ログレベル：**
+| レベル | 説明 |
+|--------|------|
+| `[INF]` | Information - サービスの起動・セッション状態の通常ログ |
+| `[WRN]` | Warning - ログアウト条件が検出された、ユーザー変更通知など |
+| `[ERR]` | Error - ログアウト実行時のエラー、システム呼び出し失敗など |
+| `[DBG]` | Debug - 詳細なデバッグ情報（開発用） |
 
 **トラブルシューティング：**
-- ログに「Current time is within logout time window」が表示されたら、設定時間帯内にいます
-- ログに「Logout condition detected」が表示されたら、ログアウト実行が試みられました
+- ログに「Session user changed」が表示されたら、ユーザー切り替えが検出され SessionManager がリセットされました
+- ログに「Maximum uptime exceeded」が表示されたら、ログアウト条件が検出されました
+- ログに「Checking against target user」が表示されたら、ユーザー照合処理が実行されました
 
 ## 設定
 
