@@ -1,22 +1,69 @@
-# SessionGuard Project - Development Instructions
+# SessionGuard プロジェクト - 開発仕様
 
-## Project Overview
-SessionGuard is a Windows Service application (.NET 10) that manages user sessions with the following features:
-- Startup time tracking
-- Scheduled logout based on configured time windows
-- Automatic logout after specified uptime duration
-- Daily reset of continuous uptime tracking
+## プロジェクト概要
+SessionGuard は .NET 10 製の Windows サービスアプリケーションです。設定ファイルに基づいてWindowsユーザーのセッションを監視し、強制ログアウトポリシーを適用します。
 
-## Checklist Progress
+## 機能
 
-- [x] Project scaffolded with .NET 10 Worker Service template
-- [x] Customize the Project - Add session management features
-- [x] Install Required Extensions (N/A - No special extensions needed)
-- [x] Compile the Project - Successfully built with .NET 10
-- [x] Create and Run Task (Ready for Windows Service deployment)
-- [x] Ensure Documentation is Complete
+### 1. ユーザー識別
+- 設定ファイルに対象ユーザーアカウントを列挙する
+- 設定ファイルに記載されたユーザーのみが強制ログアウトの対象となる
+- 記載のないユーザーは一切処理しない
 
-## Project Structure
+### 2. 強制ログアウト条件
+各条件は独立して動作する。
+
+#### 2a. 1日の利用時間上限
+- ユーザーごとに当日の累積ログイン時間を計測する
+- ログイン中は継続的に時間を加算する
+- 日本標準時（JST / UTC+9）の0時に累積時間をリセットする
+- 累積利用時間が設定値を超えた場合、強制ログアウトを実行する
+- 強制ログアウト後に再ログインした場合、当日の累積時間はリセットせず引き続き加算される
+
+#### 2b. 禁止時間帯
+- 設定ファイルに開始時刻と終了時刻を指定する
+- 現在時刻が禁止時間帯に入った場合、利用時間に関わらず強制ログアウトを実行する
+- 禁止時間帯と利用時間上限の条件はそれぞれ独立して動作する
+- 禁止時間帯が終了した後に再ログインした場合、当日の累積利用時間は保持されたまま加算が再開される
+
+## アーキテクチャ
+
+### コアコンポーネント
+
+1. **SessionConfig.cs**
+   - `appsettings.json` にバインドする設定クラス
+   - プロパティ:
+     - `TargetUsers`: ログアウトポリシーの対象となる Windows ユーザー名リスト
+     - `ProhibitedStartTime`: 禁止時間帯の開始時刻（24時間表記、例: `"22:00"`）
+     - `ProhibitedEndTime`: 禁止時間帯の終了時刻（例: `"08:00"`）
+     - `MaxDailyUsageMinutes`: 1日の累積利用時間の上限（分）
+     - `EnableLogout`: 実際のログアウト実行の有効/無効フラグ（bool）
+     - `CheckIntervalSeconds`: セッションチェックの実行間隔（秒）
+
+2. **SessionInfo.cs**
+   - ユーザーごとのセッション状態を管理する
+   - 保持する情報: ユーザー名、現在のログイン開始時刻、当日の累積利用時間
+   - JST基準の0時リセット処理を提供する
+
+3. **SessionManager.cs**
+   - セッション管理のコアロジック
+   - 現在ログイン中の Windows ユーザーを取得する
+   - `TargetUsers` に基づいて対象ユーザーを絞り込む
+   - 以下の強制ログアウト条件を評価する:
+     - 累積利用時間が `MaxDailyUsageMinutes` を超えているか
+     - 現在の JST 時刻が禁止時間帯に入っているか
+   - 同一日内のログイン・ログアウトをまたいでユーザーごとの `SessionInfo` 状態を保持する
+
+4. **LogoutHandler.cs**
+   - 指定ユーザーの Windows ログアウトを実行する
+   - ログアウト前にユーザーへ警告メッセージを表示する
+
+5. **Worker.cs**
+   - `BackgroundService` を継承したバックグラウンドサービス
+   - `IOptionsMonitor<SessionConfig>` によりサービス再起動なしで設定変更を即時反映する
+   - 定期実行: ログイン中ユーザーの取得 → 利用時間の更新 → 条件評価 → 該当時にログアウト実行
+
+## プロジェクト構成
 ```
 SessionGuard/
 ├── SessionGuard.csproj
@@ -34,80 +81,57 @@ SessionGuard/
     └── copilot-instructions.md
 ```
 
-## Implementation Summary
+## 設定ファイル例（`appsettings.json`）
+```json
+{
+  "SessionGuard": {
+    "TargetUsers": ["alice", "bob"],
+    "ProhibitedStartTime": "22:00",
+    "ProhibitedEndTime": "08:00",
+    "MaxDailyUsageMinutes": 120,
+    "EnableLogout": true,
+    "CheckIntervalSeconds": 60
+  }
+}
+```
 
-### Core Components
+## ビルド・デプロイ
 
-1. **SessionConfig.cs**
-   - Configuration class for session management settings
-   - Properties: LogoutStartTime, LogoutEndTime, MaxContinuousUptime, EnableLogout, CheckInterval
+### ビルド
+```powershell
+dotnet build -c Release
+```
 
-2. **SessionInfo.cs**
-   - Maintains session state information
-   - Tracks startup time, current uptime, day changes
-   - Provides daily reset functionality
-
-3. **SessionManager.cs**
-   - Core business logic for session management
-   - Accepts SessionConfig as parameter to ShouldLogout() for real-time setting updates
-   - Determines logout conditions based on:
-     - Configured time window (e.g., 18:00-09:00)
-     - Maximum continuous uptime duration (e.g., 1 hour)
-     - Daily date changes
-
-4. **LogoutHandler.cs**
-   - Executes system logout operations
-   - Displays warning messages to users
-   - Handles Windows logout commands
-
-5. **Worker.cs**
-   - Background service implementation using BackgroundService
-   - Uses IOptionsMonitor<SessionConfig> for real-time configuration monitoring
-   - Automatically picks up configuration file changes without service restart
-   - Periodic checking of logout conditions
-   - Integration of SessionManager and LogoutHandler
-
-### Real-time Configuration Updates
-
-The application uses `IOptionsMonitor<SessionConfig>` pattern:
-- Configuration changes in `appsettings.json` are automatically detected
-- No service restart required for setting updates
-- `OnConfigChanged` callback logs configuration updates
-- Each logout check uses the current configuration values
-
-## Build Status
-✅ Project builds successfully with no errors
-✅ All dependencies resolved (.NET 10 SDK)
-✅ Ready for deployment as Windows Service
-
-## Windows Service Installation
-
-### Install as Service
+### Windows サービスとしてインストール
 ```powershell
 sc.exe create SessionGuard binPath="C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0\SessionGuard.exe"
 net start SessionGuard
 ```
 
-### Uninstall Service
+### サービスのアンインストール
 ```powershell
 net stop SessionGuard
 sc.exe delete SessionGuard
 ```
 
-## Configuration Guide
+## チェックリスト
 
-Edit `appsettings.json` to customize behavior:
-- **LogoutStartTime**: Time window start (24h format, e.g., "22:00")
-- **LogoutEndTime**: Time window end (e.g., "08:00")
-- **MaxContinuousUptime**: Maximum hours before forced logout (e.g., 8)
-- **EnableLogout**: Toggle logout functionality (true/false)
-- **CheckInterval**: Status check interval in seconds (e.g., 60)
+- [x] .NET 10 Worker Service テンプレートでプロジェクト作成
+- [x] セッション管理機能の実装
+- [x] 必要な拡張機能のインストール（不要）
+- [x] プロジェクトのビルド確認（.NET 10 でビルド成功）
+- [x] Windows サービスとしてのデプロイ準備完了
+- [x] ドキュメント整備
 
-## Next Steps for Development
+## ビルド状態
+✅ エラーなしでビルド成功
+✅ 依存関係解決済み（.NET 10 SDK）
+✅ Windows サービスとしてデプロイ可能
 
-1. **Unit Testing**: Create unit tests for SessionManager and LogoutHandler
-2. **Integration Testing**: Test Windows Service installation and lifecycle
-3. **Logging Enhancement**: Consider Windows Event Log integration
-4. **Configuration UI**: Create configuration utility for non-technical users
-5. **Deployment**: Package as MSI installer for production use
+## 今後の開発課題
 
+1. **ユニットテスト**: SessionManager のログアウト条件判定・0時リセットのテスト作成
+2. **統合テスト**: Windows サービスのインストール・ライフサイクルのテスト
+3. **ログ強化**: Windows イベントログへの対応
+4. **設定UI**: 非技術者向けの設定ツール作成
+5. **デプロイ**: MSI インストーラーとしてのパッケージング
