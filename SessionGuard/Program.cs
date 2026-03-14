@@ -13,7 +13,7 @@ Log.Logger = new LoggerConfiguration()
     .WriteTo.File(
         path: Path.Combine(logDir, "SessionGuard-.log"),
         rollingInterval: RollingInterval.Day,
-        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}",
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}\n{Exception}",
         fileSizeLimitBytes: 10_000_000, // 10MB
         retainedFileCountLimit: 7 // 7日間保持
     )

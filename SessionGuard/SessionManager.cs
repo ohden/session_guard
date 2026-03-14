@@ -1,5 +1,3 @@
-using System.Diagnostics;
-
 namespace SessionGuard;
 
 /// <summary>
@@ -7,6 +5,12 @@ namespace SessionGuard;
 /// </summary>
 public class SessionManager
 {
+    private static readonly TimeZoneInfo JstZone =
+        TimeZoneInfo.FindSystemTimeZoneById("Tokyo Standard Time");
+
+    private static TimeSpan NowJstTimeOfDay =>
+        TimeZoneInfo.ConvertTime(DateTime.UtcNow, JstZone).TimeOfDay;
+
     private readonly ILogger _logger;
     private readonly SessionInfo _sessionInfo;
 
@@ -17,9 +21,6 @@ public class SessionManager
         _sessionInfo.Initialize();
     }
 
-    /// <summary>
-    /// 現在のセッション情報を取得
-    /// </summary>
     public SessionInfo GetSessionInfo() => _sessionInfo;
 
     /// <summary>
@@ -30,24 +31,24 @@ public class SessionManager
         if (config == null)
             throw new ArgumentNullException(nameof(config));
 
-        // 日付が変更された場合はリセット
+        // 日付（JST 0時）が変更された場合はリセット
         if (_sessionInfo.IsDayChanged)
         {
-            _logger.LogInformation("Day changed. Resetting session uptime.");
+            _logger.LogInformation("Day changed (JST midnight). Resetting accumulated usage.");
             _sessionInfo.ResetForNewDay();
         }
 
-        // 設定時間帯内かどうかを確認
-        if (IsWithinLogoutTimeWindow(config))
+        // 禁止時間帯チェック
+        if (IsWithinProhibitedTimeWindow(config))
         {
-            _logger.LogWarning("Current time is within logout time window. Logout required.");
+            _logger.LogWarning("Current time is within prohibited time window. Logout required.");
             return true;
         }
 
-        // 最大稼働時間を超えているかどうかを確認
-        if (HasExceededMaxUptime(config))
+        // 累積利用時間上限チェック
+        if (HasExceededMaxDailyUsage(config))
         {
-            _logger.LogWarning("Maximum uptime exceeded. Logout required.");
+            _logger.LogWarning("Daily usage limit exceeded. Logout required.");
             return true;
         }
 
@@ -55,28 +56,30 @@ public class SessionManager
     }
 
     /// <summary>
-    /// 現在の時刻がログアウト設定時間帯内にあるかを判定
+    /// 現在の時刻（JST）がいずれかの禁止時間帯内にあるかを判定
     /// </summary>
-    private bool IsWithinLogoutTimeWindow(SessionConfig config)
+    private bool IsWithinProhibitedTimeWindow(SessionConfig config)
     {
-        if (!config.EnableLogout || config.LogoutTimeWindows == null || config.LogoutTimeWindows.Count == 0)
+        if (!config.EnableLogout || config.ProhibitedTimeWindows == null || config.ProhibitedTimeWindows.Count == 0)
             return false;
 
-        try
-        {
-            var now = DateTime.Now.TimeOfDay;
+        var now = NowJstTimeOfDay;
 
-            // 設定されている全ての時間帯をチェック
-            foreach (var window in config.LogoutTimeWindows)
+        foreach (var window in config.ProhibitedTimeWindows)
+        {
+            try
             {
                 var startTime = TimeSpan.Parse(window.StartTime);
                 var endTime = TimeSpan.Parse(window.EndTime);
 
-                // 時間帯の判定
+                // 開始と終了が同じ場合はスキップ
+                if (startTime == endTime)
+                    continue;
+
                 bool isInWindow;
                 if (startTime > endTime)
                 {
-                    // 日をまたぐ場合 (例: 18:00～09:00)
+                    // 日をまたぐ場合 (例: 22:00～08:00)
                     isInWindow = now >= startTime || now < endTime;
                 }
                 else
@@ -85,39 +88,35 @@ public class SessionManager
                     isInWindow = now >= startTime && now < endTime;
                 }
 
-                // 任意の時間帯に該当したらログアウト対象
                 if (isInWindow)
                 {
-                    if (!string.IsNullOrEmpty(window.Description))
-                    {
-                        _logger.LogWarning("Current time is within logout time window: {description}", window.Description);
-                    }
+                    _logger.LogWarning("Prohibited time window matched: {start}～{end}", window.StartTime, window.EndTime);
                     return true;
                 }
             }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error parsing prohibited time window: {start}～{end}", window.StartTime, window.EndTime);
+            }
+        }
 
-            return false;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error parsing logout time window configuration.");
-            return false;
-        }
+        return false;
     }
 
     /// <summary>
-    /// 最大稼働時間を超えているかを判定
+    /// 当日の累積利用時間が上限を超えているかを判定
     /// </summary>
-    private bool HasExceededMaxUptime(SessionConfig config)
+    private bool HasExceededMaxDailyUsage(SessionConfig config)
     {
-        if (config.MaxContinuousUptime <= 0)
+        if (config.MaxDailyUsageMinutes <= 0)
             return false;
 
-        var currentUptime = _sessionInfo.CurrentUptimeHours;
-        var exceeded = currentUptime >= config.MaxContinuousUptime;
+        var currentUsage = _sessionInfo.CurrentUsageMinutes;
+        var exceeded = currentUsage >= config.MaxDailyUsageMinutes;
 
-        _logger.LogInformation("Uptime check - Current: {current:F6}h, Max: {max:F6}h, Exceeded: {exceeded}",
-            currentUptime, config.MaxContinuousUptime, exceeded);
+        _logger.LogInformation(
+            "Usage check - Current: {current:F1}min, Limit: {limit}min, Exceeded: {exceeded}",
+            currentUsage, config.MaxDailyUsageMinutes, exceeded);
 
         return exceeded;
     }
@@ -127,22 +126,29 @@ public class SessionManager
     /// </summary>
     public void LogStatus()
     {
-        var currentUptime = _sessionInfo.CurrentUptimeHours;
-        var accumulated = _sessionInfo.AccumulatedUptimeHours;
-        var currentSessionElapsed = DateTime.Now - _sessionInfo.StartTime;
-        var startTime = _sessionInfo.StartTime;
+        var nowJst = TimeZoneInfo.ConvertTime(DateTime.UtcNow, JstZone);
+        var accumulated = _sessionInfo.AccumulatedUsageMinutes;
+        var currentSessionElapsed = nowJst - _sessionInfo.StartTime;
+        var totalToday = _sessionInfo.CurrentUsageMinutes;
 
         _logger.LogInformation(
-            "Session Status - StartTime: {startTime}, Accumulated: {accumulated:F2}h, Current Session: {currentSession:F2}h, Total Uptime: {uptime:F2}h",
-            startTime.ToString("yyyy-MM-dd HH:mm:ss"),
+            "Session Status - StartTime: {startTime} (JST), Accumulated: {accumulated:F1}min, Current Session: {currentSession:F1}min, Total Today: {total:F1}min",
+            _sessionInfo.StartTime.ToString("yyyy-MM-dd HH:mm:ss"),
             accumulated,
-            currentSessionElapsed.TotalHours,
-            currentUptime
-        );
+            currentSessionElapsed.TotalMinutes,
+            totalToday);
     }
 
     /// <summary>
-    /// ログアウト時に現在のセッション稼働時間を累積し、新しいセッション開始時刻をリセット
+    /// 同じユーザーが再ログインした際に呼び出す（累積利用時間を保持）
+    /// </summary>
+    public void StartNewSession()
+    {
+        _sessionInfo.StartNewSession();
+    }
+
+    /// <summary>
+    /// ログアウト時に現在のセッション利用時間を累積してリセット
     /// </summary>
     public void AccumulateUptimeAndReset()
     {

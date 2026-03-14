@@ -5,50 +5,50 @@ namespace SessionGuard;
 /// </summary>
 public class SessionInfo
 {
-    private readonly ILogger _logger;
+    private static readonly TimeZoneInfo JstZone =
+        TimeZoneInfo.FindSystemTimeZoneById("Tokyo Standard Time");
+
+    private static DateTime NowJst =>
+        TimeZoneInfo.ConvertTime(DateTime.UtcNow, JstZone);
+
+    private readonly ILogger? _logger;
 
     /// <summary>
-    /// セッション開始時刻
+    /// 現在のセッション開始時刻（JST）
     /// </summary>
     public DateTime StartTime { get; set; }
 
     /// <summary>
-    /// セッション開始日付（日付変更の判定用）
+    /// セッション開始日付（JST、0時リセット判定用）
     /// </summary>
     public DateOnly StartDate { get; set; }
 
     /// <summary>
-    /// 連続稼働時間をリセットした最後の時刻
+    /// 当日の累積利用時間（分単位）
+    /// ログアウト→再ログインしても、日付（JST）が変わるまで累積される
     /// </summary>
-    public DateTime LastResetTime { get; set; }
+    public double AccumulatedUsageMinutes { get; set; } = 0.0;
 
     /// <summary>
-    /// 同じ日内での累計稼働時間（時間単位）
-    /// ログアウト→ログインしても、日付が変わるまで累積される
+    /// 当日の累計利用時間（分単位）= 累積 + 現在のセッション経過時間
     /// </summary>
-    public double AccumulatedUptimeHours { get; set; } = 0.0;
-
-    /// <summary>
-    /// 現在の連続稼働時間（時間単位）
-    /// = 累計稼働時間 + 現在のセッション稼働時間
-    /// </summary>
-    public double CurrentUptimeHours
+    public double CurrentUsageMinutes
     {
         get
         {
-            var currentSessionElapsed = DateTime.Now - StartTime;
-            return AccumulatedUptimeHours + currentSessionElapsed.TotalHours;
+            var elapsed = NowJst - StartTime;
+            return AccumulatedUsageMinutes + elapsed.TotalMinutes;
         }
     }
 
     /// <summary>
-    /// 日付が変更されたかどうかを判定
+    /// JST 0時を境に日付が変わったかどうかを判定
     /// </summary>
     public bool IsDayChanged
     {
         get
         {
-            var currentDate = DateOnly.FromDateTime(DateTime.Now);
+            var currentDate = DateOnly.FromDateTime(NowJst);
             return currentDate != StartDate;
         }
     }
@@ -59,48 +59,54 @@ public class SessionInfo
     }
 
     /// <summary>
-    /// セッション情報を初期化（サービス起動時刻を基準に設定）
+    /// セッション情報を初期化（サービス起動時または別ユーザーログイン時）
+    /// 累積利用時間もリセットする
     /// </summary>
     public void Initialize()
     {
-        // サービス起動時刻を基準時刻として設定
-        // これにより、サービス起動後は経過時間が0からカウント開始される
-        StartTime = DateTime.Now;
-        _logger?.LogInformation("Session start time set to service startup time: {startTime}", StartTime.ToString("yyyy-MM-dd HH:mm:ss"));
-
-        StartDate = DateOnly.FromDateTime(DateTime.Now);
-        LastResetTime = DateTime.Now;
-        // AccumulatedUptimeHours はリセットしない（ログイン時に保持）
+        StartTime = NowJst;
+        StartDate = DateOnly.FromDateTime(NowJst);
+        AccumulatedUsageMinutes = 0.0;
+        _logger?.LogInformation("Session initialized at: {startTime} (JST)", StartTime.ToString("yyyy-MM-dd HH:mm:ss"));
     }
 
     /// <summary>
-    /// ログアウト時に現在のセッション稼働時間を累積し、新しいセッションをリセット
+    /// 同じユーザーの新しいセッション開始（累積利用時間を保持）
+    /// 再ログイン時に呼び出す
+    /// </summary>
+    public void StartNewSession()
+    {
+        StartTime = NowJst;
+        _logger?.LogInformation(
+            "New session started at: {startTime} (JST). Accumulated usage preserved: {accumulated:F1}min",
+            StartTime.ToString("yyyy-MM-dd HH:mm:ss"),
+            AccumulatedUsageMinutes);
+    }
+
+    /// <summary>
+    /// ログアウト時に現在のセッション利用時間を累積し、セッション開始時刻をリセット
     /// </summary>
     public void AccumulateAndResetCurrentSession()
     {
-        var currentSessionElapsed = DateTime.Now - StartTime;
-        AccumulatedUptimeHours += currentSessionElapsed.TotalHours;
+        var elapsed = NowJst - StartTime;
+        AccumulatedUsageMinutes += elapsed.TotalMinutes;
 
         _logger?.LogInformation(
-            "Session accumulated. Previous session: {previousSession:F2}h, Total accumulated: {total:F2}h",
-            currentSessionElapsed.TotalHours,
-            AccumulatedUptimeHours
-        );
+            "Session accumulated. This session: {session:F1}min, Total today: {total:F1}min",
+            elapsed.TotalMinutes,
+            AccumulatedUsageMinutes);
 
-        // 新しいセッション開始時刻をリセット
-        StartTime = DateTime.Now;
+        StartTime = NowJst;
     }
 
     /// <summary>
-    /// 日付変更時にリセット
+    /// JST 0時を境に日付が変わった際にリセット
     /// </summary>
     public void ResetForNewDay()
     {
-        StartDate = DateOnly.FromDateTime(DateTime.Now);
-        StartTime = DateTime.Now;
-        LastResetTime = DateTime.Now;
-        AccumulatedUptimeHours = 0.0;  // 日付が変わったら累積時間もリセット
-
-        _logger?.LogInformation("Day changed. Session and accumulated uptime reset.");
+        StartDate = DateOnly.FromDateTime(NowJst);
+        StartTime = NowJst;
+        AccumulatedUsageMinutes = 0.0;
+        _logger?.LogInformation("Day changed (JST midnight). Accumulated usage reset.");
     }
 }
