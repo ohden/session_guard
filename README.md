@@ -1,433 +1,161 @@
 # SessionGuard - Windows Session Manager Service
 
-SessionGuard は、Windows OS 上で動作するバックグラウンドサービスで、ユーザーセッションを管理し、設定された条件に基づいて自動ログアウトを実行します。
+SessionGuard は、Windows OS 上で動作するバックグラウンドサービスです。設定ファイルに基づいて対象ユーザーのセッションを監視し、条件に合致した場合に強制ログアウトを実行します。
 
 ## 機能
 
-### 1. セッション監視
-- Windows セッションのログイン時刻を自動取得
-- セッション開始からの経過時間を追跡
-- ユーザーがログアウト→ログインしても、サービスは継続稼働
-- 新しいセッションで再び判定を開始
+### 1. ユーザー識別
+- 設定ファイルに記載されたユーザーのみが強制ログアウトの対象
+- 記載のないユーザーは一切処理しない
 
-### 2. 複数時間帯別ログアウト
-- 複数の時間帯を設定可能
-- 設定された時間帯のいずれかに該当する場合、自動ログアウト
-- 例：18:00～09:00（夜間）、12:00～13:00（昼休み）
+### 2. 禁止時間帯
+- 複数の禁止時間帯（開始・終了時刻）を設定可能
+- 現在時刻がいずれかの禁止時間帯に入ったら強制ログアウト
+- 日をまたぐ時間帯（例: 22:00〜08:00）も設定可能
 
-### 3. 連続稼働時間制限
-- 指定時間以上の稼働でログアウト
-- デフォルト：1時間
+### 3. 1日の利用時間上限
+- 当日の累積ログイン時間が設定値を超えたら強制ログアウト
+- 日本標準時（JST）の0時に累積時間をリセット
+- 禁止時間帯によるログアウト後に再ログインしても、累積時間は引き継がれる
 
-### 4. 日次リセット
-- 連続稼働時間は日付が変わると自動リセット
-- 毎日の稼働開始時刻から計測
+### 4. リアルタイム設定反映
+- `appsettings.json` を編集・保存するだけで設定が即時反映
+- サービス再起動不要
 
 ## システム要件
 
-- **OS**: Windows 10/11 or Windows Server 2016 以上
-- **.NET**: .NET 10 SDK
+- **OS**: Windows 10/11 または Windows Server 2016 以上
+- **.NET**: .NET 10 ランタイム（`SelfContained=false` のため必要）
 
-## インストール
+## インストール手順
 
-### 前提条件
-
-- **.NET 10 SDK** がインストールされていること
-- **PowerShell** (管理者権限で実行)
-- **Windows 10/11** または **Windows Server 2016** 以上
-
-### 1. プロジェクトのビルド
-
-プロジェクトをリリース構成でビルドします。
+### 1. ビルド（単一ファイル発行）
 
 ```powershell
-# プロジェクトディレクトリへ移動
 cd C:\wk\repos\SessionGuard\SessionGuard
 
-# リリース構成でビルド
-dotnet build -c Release
+dotnet publish -c Release -r win-x64
 ```
 
-**ビルド結果：**
-- ビルド成功後、`bin\Release\net10.0\` ディレクトリに実行可能ファイル（`SessionGuard.exe`）が生成されます
-- 設定ファイル（`appsettings.json`）もこのディレクトリにコピーされます
+**発行結果：** `bin\Release\net10.0\win-x64\publish\` に以下が生成されます
 
-**ビルドオプション：**
-| オプション | 説明 |
-|-----------|------|
-| `-c Release` | リリース構成でビルド（最適化される）|
-| `-c Debug` | デバッグ構成でビルド（デバッグ目的） |
-
-**トラブルシューティング：**
-- ビルド失敗時は、NuGet パッケージの復元を試してください：
-  ```powershell
-  dotnet restore
-  dotnet build -c Release
-  ```
-
-### 2. 単一ファイル Exe の発行（Publishing）
-
-ビルド後、すべての依存関係を含むシングルファイル実行可能ファイル（exe）を生成します。
-
-```powershell
-# プロジェクトディレクトリへ移動
-cd C:\wk\repos\SessionGuard\SessionGuard
-
-# 単一ファイル exe の発行
-dotnet publish -c Release
 ```
-
-**発行結果：**
-- 発行後、`bin\Release\net10.0\win-x64\publish\` ディレクトリに以下のファイルが生成されます：
-  - `SessionGuard.exe` (3.8 MB) - すべての DLL を含む単一ファイル実行可能ファイル
-  - `appsettings.json` - 本番用設定ファイル
-  - `SessionGuard.pdb` - デバッグシンボル（オプション）
-
-**単一ファイル exe の利点：**
-- 配布時に exe + 設定ファイルのみで OK（依存関係の DLL が不要）
-- サーバーへのデプロイが簡単
-- Windows サービスとして安定稼働
-
-**発行ファイルの配置：**
-```powershell
-# 発行ファイルをサービス実行位置にコピー
-Copy-Item "bin\Release\net10.0\win-x64\publish\SessionGuard.exe" "bin\Release\net10.0\" -Force
-Copy-Item "bin\Release\net10.0\win-x64\publish\appsettings.json" "bin\Release\net10.0\" -Force
-```
-
-**サービス実行ディレクトリ構造：**
-```
-C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0\
-├── SessionGuard.exe          ← 単一ファイル exe
+publish\
+├── SessionGuard.exe          ← 全DLLを含む単一ファイル
 ├── appsettings.json          ← 設定ファイル
 ├── SessionGuard.pdb          ← デバッグシンボル
-└── logs/                      ← ログディレクトリ（実行時に生成）
+└── SessionGuard.runtimeconfig.json
 ```
 
-### 3. Windows サービスとしてインストール
+### 2. Windows サービスとして登録
 
-発行が完了したら、サービスをインストールして起動します。
+**管理者権限の PowerShell** で実行してください。
 
 ```powershell
-# リリース版ディレクトリへ移動
-cd C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0
+# サービス登録
+sc.exe create SessionGuard binPath="C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0\win-x64\publish\SessionGuard.exe" start= auto
 
-# sc.exe を使ってサービスをインストール
-sc.exe create SessionGuard binPath= "C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0\SessionGuard.exe" start= auto
+# サービス起動
+net start SessionGuard
 
-# サービスを起動
-Start-Service -Name SessionGuard
-
-# サービスの状態確認
-Get-Service -Name SessionGuard
+# 状態確認
+sc.exe query SessionGuard
 ```
 
-**サービス登録とは：**
-- `sc.exe create` コマンドにより、SessionGuardが Windows サービスとして登録されます
-- `binPath=` に exe の絶対パスを指定
-- `start= auto` により、OS 起動時に自動起動するように設定
-
-**起動確認：**
-出力例：
-```
-Status   Name               DisplayName
-------   ----               -----------
-Running  SessionGuard       SessionGuard
-```
-
-**設定ファイルの配置：**
-- `appsettings.json` は `SessionGuard.exe` と同じディレクトリにあれば、自動的に読み込まれます
-- サービス起動時に設定ファイルを確認して、設定に基づいいてログアウト判定を開始します
-
-### 4. Windows サービスのアンインストール
-
-サービスを削除する場合は、以下のコマンドを実行します。
+### 3. サービスの停止・削除
 
 ```powershell
-# サービスを停止
-Stop-Service -Name SessionGuard
-
-# sc.exe を使ってサービスを削除
+net stop SessionGuard
 sc.exe delete SessionGuard
 ```
 
-**削除確認：**
-```powershell
-Get-Service -Name SessionGuard
-```
-エラーが出れば、削除完了です。
-
-## 動作確認
-
-サービスが正常に動作しているか確認するには、ログファイルを確認します。
+### 4. 更新デプロイ手順
 
 ```powershell
-# ログディレクトリへ移動
-cd C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0\logs
-
-# ログファイルの最新エントリを確認
-Get-Content -Path "SessionGuard-*.log" -Tail 50
-
-# リアルタイムでログを監視
-Get-Content -Path "SessionGuard-*.log" -Wait
+net stop SessionGuard
+cd C:\wk\repos\SessionGuard\SessionGuard
+dotnet publish -c Release -r win-x64
+net start SessionGuard
 ```
-
-**ログファイルの場所：**
-- ログは `bin\Release\net10.0\logs\` ディレクトリに日ごとのファイルで保存されます
-- ファイル形式：`SessionGuard-YYYYMMDD.log`（例：`SessionGuard-20260305.log`）
-- 7日間のログが保持されます（古いログは自動削除）
-
-**ログの見方：**
-```
-2026-03-05 22:19:30 [INF] ServiceGuard service started
-2026-03-05 22:19:30 [WRN] Session user changed from '[no user]' to 's1n'. Resetting SessionManager.
-2026-03-05 22:19:30 [INF] Session Status - StartTime: 2026-03-05 22:19:30, Current Session: 0.00h, Total Uptime: 0.00h
-```
-
-**ログレベル：**
-| レベル | 説明 |
-|--------|------|
-| `[INF]` | Information - サービスの起動・セッション状態の通常ログ |
-| `[WRN]` | Warning - ログアウト条件が検出された、ユーザー変更通知など |
-| `[ERR]` | Error - ログアウト実行時のエラー、システム呼び出し失敗など |
-| `[DBG]` | Debug - 詳細なデバッグ情報（開発用） |
-
-**トラブルシューティング：**
-- ログに「Session user changed」が表示されたら、ユーザー切り替えが検出され SessionManager がリセットされました
-- ログに「Maximum uptime exceeded」が表示されたら、ログアウト条件が検出されました
-- ログに「Checking against target user」が表示されたら、ユーザー照合処理が実行されました
 
 ## 設定
 
-### appsettings.json
-
-プロジェクトルートの `appsettings.json` で以下の設定を可能にしています:
+`bin\Release\net10.0\win-x64\publish\appsettings.json` を編集します（サービス再起動不要で即時反映）。
 
 ```json
 {
   "SessionConfig": {
-    "LogoutTimeWindows": [
-      {
-        "StartTime": "18:00",
-        "EndTime": "09:00",
-        "Description": "夜間・早朝の営業外時間"
-      },
-      {
-        "StartTime": "12:00",
-        "EndTime": "13:00",
-        "Description": "昼休み時間"
-      }
-    ],
-    "MaxContinuousUptime": 1,
-    "EnableLogout": true,
-    "CheckInterval": 5,
     "TargetUsers": [
       "user1",
-      "user2",
-      "DOMAIN\\user3"
-    ]
+      "user2"
+    ],
+    "ProhibitedTimeWindows": [
+      { "StartTime": "22:00", "EndTime": "08:00", "Memo": "夜間・早朝の使用禁止" },
+      { "StartTime": "12:00", "EndTime": "13:00", "Memo": "昼休み" }
+    ],
+    "MaxDailyUsageMinutes": 120,
+    "EnableLogout": true,
+    "CheckIntervalSeconds": 15
   }
 }
 ```
 
-#### 設定項目の説明
+### 設定項目
 
 | 項目 | 型 | 説明 |
 |------|-----|------|
-| `LogoutTimeWindows` | array | ログアウト対象の時間帯リスト（複数設定可能） |
-| `LogoutTimeWindows[].StartTime` | string | 時間帯開始時刻 (HH:mm形式) |
-| `LogoutTimeWindows[].EndTime` | string | 時間帯終了時刻 (HH:mm形式) |
-| `LogoutTimeWindows[].Description` | string | 時間帯の説明 (ログ出力用) |
-| `MaxContinuousUptime` | double | 最大連続稼働時間（時間単位、小数対応） |
-| `EnableLogout` | bool | ログアウト機能を有効にするか |
-| `CheckInterval` | int | ログアウト条件の確認間隔（秒単位） |
-| `TargetUsers` | array | 強制ログアウト対象ユーザーのリスト（空の場合はすべてのユーザーが対象） |
-
-#### 複数時間帯設定の例
-
-```json
-{
-  "SessionConfig": {
-    "LogoutTimeWindows": [
-      {
-        "StartTime": "18:00",
-        "EndTime": "09:00",
-        "Description": "夜間・早朝（18:00～09:00）"
-      },
-      {
-        "StartTime": "12:00",
-        "EndTime": "13:00",
-        "Description": "昼休み（12:00～13:00）"
-      },
-      {
-        "StartTime": "15:30",
-        "EndTime": "15:45",
-        "Description": "休憩時間（15:30～15:45）"
-      }
-    ],
-    "MaxContinuousUptime": 1,
-    "EnableLogout": true,
-    "CheckInterval": 60
-  }
-}
-```
-
-この設定では以下の時間帯にログアウトされます：
-- 18:00 ～ 09:00（夜間・早朝）
-- 12:00 ～ 13:00（昼休み）
-- 15:30 ～ 15:45（休憩時間）
-
-#### 設定値のリアルタイム反映
-
-**重要**: このアプリケーションは `IOptionsMonitor` を使用しており、`appsettings.json` を編集すると、**サービスを再起動せずに自動的に新しい設定が反映されます**。
-
-##### 動作例
-
-1. サービスが起動中の状態で `appsettings.json` を編集
-2. ファイルを保存
-3. 数秒以内に新しい設定が自動的に読み込まれる
-4. イベントビューアでログ出力を確認: `"Configuration changed. Updating SessionManager..."`
-
-##### 注意事項
-
-- ファイルの編集は **JSON 形式が正しい状態で保存**してください
-- 形式エラーがあると読み込みが失敗します
-- ファイル監視には若干のタイムラグ（数秒程度）があります
-
-### 例: 異なる設定
-
-```json
-{
-  "SessionConfig": {
-    "LogoutTimeWindows": [
-      {
-        "StartTime": "20:00",
-        "EndTime": "06:00",
-        "Description": "営業外時間（20:00～06:00）"
-      },
-      {
-        "StartTime": "11:30",
-        "EndTime": "12:30",
-        "Description": "昼休み（11:30～12:30）"
-      }
-    ],
-    "MaxContinuousUptime": 10,
-    "EnableLogout": true,
-    "CheckInterval": 120
-  }
-}
-```
-
-この設定では：
-- **動作時間**: 06:00 ～ 20:00（上記の時間帯以外）
-- **最大稼働**: 10時間以上稼働していればログアウト
-- **確認間隔**: 120秒（2分）ごとに条件をチェック
+| `TargetUsers` | string[] | 強制ログアウト対象のユーザー名リスト。空の場合は誰も対象にならない |
+| `ProhibitedTimeWindows` | array | 禁止時間帯のリスト（複数設定可） |
+| `ProhibitedTimeWindows[].StartTime` | string | 禁止時間帯の開始時刻（HH:mm形式） |
+| `ProhibitedTimeWindows[].EndTime` | string | 禁止時間帯の終了時刻（HH:mm形式） |
+| `ProhibitedTimeWindows[].Memo` | string | 備考（任意） |
+| `MaxDailyUsageMinutes` | int | 1日の累積利用時間の上限（分単位） |
+| `EnableLogout` | bool | ログアウト実行の有効/無効 |
+| `CheckIntervalSeconds` | int | セッションチェックの実行間隔（秒単位） |
 
 ## ログ
 
-サービスはログファイルを Windows Event Viewer に出力します。
+ログファイルは `publish\logs\` ディレクトリに日次で保存されます（7日間保持）。
 
-### ログの確認
+```
+logs\SessionGuard-YYYYMMDD.log
+```
 
 ```powershell
-# Event Viewer を開く
-eventvwr.msc
-
-# 以下の場所でログを確認:
-# Windows ログ > Application
+# リアルタイム監視
+Get-Content -Path "C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0\win-x64\publish\logs\SessionGuard-*.log" -Wait
 ```
 
 ### ログレベル
 
-- **Information**: 通常のサービス操作（起動、停止、ステータス）
-- **Warning**: ログアウト条件の検出
-- **Error**: エラーの発生
-- **Critical**: ログアウト実行時
+| レベル | 説明 |
+|--------|------|
+| `[INF]` | 通常動作（起動・停止・セッション状態） |
+| `[WRN]` | ログアウト条件検出・ユーザー変更など |
+| `[ERR]` | エラー発生 |
+| `[CRI]` | ログアウト実行 |
 
-## プロジェクト構造
+## プロジェクト構成
 
 ```
 SessionGuard/
-├── SessionGuard.csproj          # プロジェクトファイル
-├── Program.cs                   # アプリケーション エントリポイント
-├── Worker.cs                    # バックグラウンドサービス実装
-├── SessionConfig.cs             # セッション設定クラス
-├── SessionInfo.cs               # セッション情報クラス
-├── SessionManager.cs            # セッション管理ロジック
-├── LogoutHandler.cs             # ログアウト処理実装
-├── appsettings.json             # アプリケーション設定
-├── appsettings.Development.json # 開発環境設定
-└── Properties/
-    └── launchSettings.json      # 起動設定
-```
-
-## 開発
-
-### ビルド
-
-```powershell
-cd C:\wk\repos\SessionGuard\SessionGuard
-dotnet build
-```
-
-### 実行（デバッグモード）
-
-```powershell
-cd C:\wk\repos\SessionGuard\SessionGuard
-dotnet run
-```
-
-### テスト
-
-```powershell
-# ユニットテストプロジェクト（別途作成が必要）
-dotnet test
+├── SessionGuard.csproj
+├── Program.cs
+├── Worker.cs
+├── SessionConfig.cs
+├── SessionInfo.cs
+├── SessionManager.cs
+├── LogoutHandler.cs
+└── appsettings.json
 ```
 
 ## トラブルシューティング
 
-### サービスが起動しない場合
+### サービスが起動しない
+- `dotnet publish -c Release -r win-x64` が成功しているか確認
+- `appsettings.json` が正しい JSON 形式か確認
 
-1. **ビルドの確認**
-   ```powershell
-   dotnet build -c Release
-   ```
-
-2. **設定ファイルの確認**
-   - `appsettings.json` が正しい形式であることを確認
-
-3. **イベントビューアの確認**
-   - Windows Event Viewer でエラーメッセージを確認
-
-### ログアウトが実行されない場合
-
-1. **EnableLogout 設定を確認**
-   ```json
-   "EnableLogout": true
-   ```
-
-2. **時間設定を確認**
-   - `LogoutStartTime` と `LogoutEndTime` の値を確認
-
-3. **CheckInterval の調整**
-   - チェック間隔を短くして、反応時間を改善
-
-## ライセンス
-
-このプロジェクトはプライベートプロジェクトです。
-
-## サポート
-
-問題が発生した場合は、以下の方法で対応してください:
-
-1. イベントビューアで詳細なエラーメッセージを確認
-2. `appsettings.json` の設定を見直す
-3. サービスを再起動する
-
-## 変更履歴
-
-### v1.0.0 (Initial Release)
-- 基本的なセッション管理機能の実装
-- 時間帯別ログアウト機能
-- 稼働時間制限機能
-- 日次リセット機能
+### ログアウトが実行されない
+- `EnableLogout` が `true` になっているか確認
+- `TargetUsers` に対象ユーザー名が記載されているか確認
+- ログファイルでエラーが出ていないか確認

@@ -98,14 +98,23 @@ SessionGuard/
 
 ## ビルド・デプロイ
 
-### ビルド
+### ビルド（単一ファイル発行）
 ```powershell
-dotnet build -c Release
+cd C:\wk\repos\SessionGuard\SessionGuard
+dotnet publish -c Release -r win-x64
 ```
+発行先: `bin\Release\net10.0\win-x64\publish\`
 
 ### Windows サービスとしてインストール
 ```powershell
-sc.exe create SessionGuard binPath="C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0\SessionGuard.exe"
+sc.exe create SessionGuard binPath="C:\wk\repos\SessionGuard\SessionGuard\bin\Release\net10.0\win-x64\publish\SessionGuard.exe" start= auto
+net start SessionGuard
+```
+
+### 更新デプロイ
+```powershell
+net stop SessionGuard
+dotnet publish -c Release -r win-x64
 net start SessionGuard
 ```
 
