@@ -22,27 +22,35 @@ public class ProhibitedTimeWindow
 }
 
 /// <summary>
-/// セッション管理の設定を保持するクラス
+/// ユーザー個別の設定を保持するクラス
 /// </summary>
-public class SessionConfig
+public class UserConfig
 {
     /// <summary>
-    /// 強制ログアウト対象ユーザーのリスト
-    /// ここに記載されたユーザーのみ強制ログアウト判定の対象になります
-    /// 空の場合は誰も対象になりません
+    /// 強制ログアウト対象ユーザー名（domain\user, user@domain, user のいずれかの形式）
     /// </summary>
-    public List<string> TargetUsers { get; set; } = new();
+    public string UserName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 1日の最大累積利用時間（分単位）。0以下の場合は上限なし
+    /// </summary>
+    public int MaxDailyUsageMinutes { get; set; } = 120;
 
     /// <summary>
     /// 禁止時間帯のリスト（複数設定可能）
     /// </summary>
     public List<ProhibitedTimeWindow> ProhibitedTimeWindows { get; set; } = new();
+}
 
+/// <summary>
+/// セッション管理の設定を保持するクラス
+/// </summary>
+public class SessionConfig
+{
     /// <summary>
-    /// 1日の最大累積利用時間（分単位）
-    /// この時間を超えた場合、ログアウトする
+    /// ユーザー別設定のリスト。ここに記載されたユーザーのみ強制ログアウト判定の対象になります
     /// </summary>
-    public int MaxDailyUsageMinutes { get; set; } = 120;
+    public List<UserConfig> Users { get; set; } = new();
 
     /// <summary>
     /// ログアウト実行を有効にするかどうか

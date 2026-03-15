@@ -1,7 +1,7 @@
 namespace SessionGuard;
 
 /// <summary>
-/// セッション管理とログアウト判定を行うクラス
+/// セッション管理とログアウト判定を行うクラス（ユーザー1人分）
 /// </summary>
 public class SessionManager
 {
@@ -14,7 +14,7 @@ public class SessionManager
     private readonly ILogger _logger;
     private readonly SessionInfo _sessionInfo;
 
-    public SessionManager(SessionConfig config, ILogger logger)
+    public SessionManager(ILogger logger)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _sessionInfo = new SessionInfo(logger);
@@ -24,12 +24,12 @@ public class SessionManager
     public SessionInfo GetSessionInfo() => _sessionInfo;
 
     /// <summary>
-    /// ログアウトが必要かどうかを判定（設定をパラメータで受け取る）
+    /// ログアウトが必要かどうかを判定
     /// </summary>
-    public bool ShouldLogout(SessionConfig config)
+    public bool ShouldLogout(UserConfig userConfig, bool enableLogout)
     {
-        if (config == null)
-            throw new ArgumentNullException(nameof(config));
+        if (userConfig == null)
+            throw new ArgumentNullException(nameof(userConfig));
 
         // 日付（JST 0時）が変更された場合はリセット
         if (_sessionInfo.IsDayChanged)
@@ -39,14 +39,14 @@ public class SessionManager
         }
 
         // 禁止時間帯チェック
-        if (IsWithinProhibitedTimeWindow(config))
+        if (IsWithinProhibitedTimeWindow(userConfig, enableLogout))
         {
             _logger.LogWarning("Current time is within prohibited time window. Logout required.");
             return true;
         }
 
         // 累積利用時間上限チェック
-        if (HasExceededMaxDailyUsage(config))
+        if (HasExceededMaxDailyUsage(userConfig))
         {
             _logger.LogWarning("Daily usage limit exceeded. Logout required.");
             return true;
@@ -58,14 +58,14 @@ public class SessionManager
     /// <summary>
     /// 現在の時刻（JST）がいずれかの禁止時間帯内にあるかを判定
     /// </summary>
-    private bool IsWithinProhibitedTimeWindow(SessionConfig config)
+    private bool IsWithinProhibitedTimeWindow(UserConfig userConfig, bool enableLogout)
     {
-        if (!config.EnableLogout || config.ProhibitedTimeWindows == null || config.ProhibitedTimeWindows.Count == 0)
+        if (!enableLogout || userConfig.ProhibitedTimeWindows == null || userConfig.ProhibitedTimeWindows.Count == 0)
             return false;
 
         var now = NowJstTimeOfDay;
 
-        foreach (var window in config.ProhibitedTimeWindows)
+        foreach (var window in userConfig.ProhibitedTimeWindows)
         {
             try
             {
@@ -106,17 +106,17 @@ public class SessionManager
     /// <summary>
     /// 当日の累積利用時間が上限を超えているかを判定
     /// </summary>
-    private bool HasExceededMaxDailyUsage(SessionConfig config)
+    private bool HasExceededMaxDailyUsage(UserConfig userConfig)
     {
-        if (config.MaxDailyUsageMinutes <= 0)
+        if (userConfig.MaxDailyUsageMinutes <= 0)
             return false;
 
         var currentUsage = _sessionInfo.CurrentUsageMinutes;
-        var exceeded = currentUsage >= config.MaxDailyUsageMinutes;
+        var exceeded = currentUsage >= userConfig.MaxDailyUsageMinutes;
 
         _logger.LogInformation(
             "Usage check - Current: {current:F1}min, Limit: {limit}min, Exceeded: {exceeded}",
-            currentUsage, config.MaxDailyUsageMinutes, exceeded);
+            currentUsage, userConfig.MaxDailyUsageMinutes, exceeded);
 
         return exceeded;
     }

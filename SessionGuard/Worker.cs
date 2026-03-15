@@ -7,11 +7,11 @@ public class Worker : BackgroundService
     private readonly ILogger<Worker> _logger;
     private readonly IOptionsMonitor<SessionConfig> _configMonitor;
     private readonly ILoggerFactory _loggerFactory;
-    private SessionManager? _sessionManager;
-    private LogoutHandler? _logoutHandler;
+    private readonly LogoutHandler _logoutHandler;
+    private readonly Dictionary<string, SessionManager> _sessionManagers =
+        new(StringComparer.OrdinalIgnoreCase);
     private IDisposable? _configChangeToken;
     private string? _previousUserName;   // 直前チェック時のユーザー名（null = 未ログイン）
-    private string? _lastLoggedInUser;   // 最後にログインしていたユーザー名
 
     public Worker(ILogger<Worker> logger, IOptionsMonitor<SessionConfig> configMonitor, ILoggerFactory loggerFactory)
     {
@@ -19,26 +19,17 @@ public class Worker : BackgroundService
         _configMonitor = configMonitor ?? throw new ArgumentNullException(nameof(configMonitor));
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
 
+        _logoutHandler = new LogoutHandler(loggerFactory.CreateLogger("LogoutHandler"));
         _configChangeToken = _configMonitor.OnChange(OnConfigChanged);
-        InitializeManagers(loggerFactory);
-    }
-
-    private void InitializeManagers(ILoggerFactory loggerFactory)
-    {
-        var sessionManagerLogger = loggerFactory.CreateLogger("SessionManager");
-        var logoutHandlerLogger = loggerFactory.CreateLogger("LogoutHandler");
-
-        _sessionManager = new SessionManager(_configMonitor.CurrentValue, sessionManagerLogger);
-        _logoutHandler = new LogoutHandler(logoutHandlerLogger);
     }
 
     private void OnConfigChanged(SessionConfig newConfig)
     {
         _logger.LogInformation("Configuration changed.");
         _logger.LogInformation(
-            "ProhibitedTimeWindows: {count}件, MaxDailyUsage: {max}min, CheckInterval: {interval}s",
-            newConfig.ProhibitedTimeWindows?.Count ?? 0,
-            newConfig.MaxDailyUsageMinutes, newConfig.CheckIntervalSeconds);
+            "Users: {count}人, CheckInterval: {interval}s",
+            newConfig.Users?.Count ?? 0,
+            newConfig.CheckIntervalSeconds);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -47,83 +38,73 @@ public class Worker : BackgroundService
 
         _logger.LogInformation("SessionGuard service started at {time}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
         _logger.LogInformation(
-            "ProhibitedTimeWindows: {count}件, MaxDailyUsage: {max}min, CheckInterval: {interval}s",
-            config.ProhibitedTimeWindows?.Count ?? 0,
-            config.MaxDailyUsageMinutes, config.CheckIntervalSeconds);
+            "Users: {count}人, CheckInterval: {interval}s",
+            config.Users?.Count ?? 0,
+            config.CheckIntervalSeconds);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 var currentConfig = _configMonitor.CurrentValue;
-
-                if (_sessionManager == null || _logoutHandler == null)
-                {
-                    _logger.LogError("SessionManager or LogoutHandler is not initialized.");
-                    await Task.Delay(currentConfig.CheckIntervalSeconds * 1000, stoppingToken);
-                    continue;
-                }
-
-                _sessionManager.LogStatus();
+                var currentUserName = WindowsSessionHelper.GetSessionUserName();
 
                 // ユーザー変更検出
-                var currentUserName = WindowsSessionHelper.GetSessionUserName();
                 if (currentUserName != _previousUserName)
                 {
-                    if (string.IsNullOrEmpty(currentUserName))
+                    // 前のユーザーの利用時間を累積
+                    if (!string.IsNullOrEmpty(_previousUserName) &&
+                        _sessionManagers.TryGetValue(_previousUserName, out var prevManager))
                     {
-                        // ログアウト検出：現在のセッション時間を累積しておく
-                        _sessionManager.AccumulateUptimeAndReset();
-                        _logger.LogInformation("User logged out. Accumulated usage saved.");
+                        prevManager.AccumulateUptimeAndReset();
+                        _logger.LogInformation("User '{user}' session ended. Accumulated usage saved.", _previousUserName);
                     }
-                    else if (string.IsNullOrEmpty(_previousUserName))
+
+                    // 新しいユーザーのセッション開始
+                    if (!string.IsNullOrEmpty(currentUserName))
                     {
-                        // ログイン検出
-                        if (currentUserName == _lastLoggedInUser)
+                        bool existed = _sessionManagers.ContainsKey(currentUserName);
+                        var manager = GetOrCreateSessionManager(currentUserName);
+                        if (existed)
                         {
-                            // 同じユーザーが再ログイン：累積利用時間を保持してセッション開始時刻のみリセット
-                            _sessionManager.StartNewSession();
-                            _logger.LogInformation(
-                                "User '{user}' re-logged in. Accumulated usage preserved.", currentUserName);
+                            manager.StartNewSession();
+                            _logger.LogInformation("User '{user}' re-logged in. Accumulated usage preserved.", currentUserName);
                         }
                         else
                         {
-                            // 別ユーザーがログイン：完全リセット
-                            InitializeManagers(_loggerFactory);
-                            _logger.LogInformation(
-                                "Different user '{user}' logged in. SessionManager reset.", currentUserName);
+                            _logger.LogInformation("User '{user}' logged in. New session started.", currentUserName);
                         }
-                        _lastLoggedInUser = currentUserName;
                     }
                     else
                     {
-                        // ログアウトなしでユーザーが直接切り替わった場合：完全リセット
-                        InitializeManagers(_loggerFactory);
-                        _lastLoggedInUser = currentUserName;
-                        _logger.LogInformation(
-                            "User changed to '{user}'. SessionManager reset.", currentUserName);
+                        _logger.LogInformation("User logged out.");
                     }
 
                     _previousUserName = currentUserName;
                 }
 
                 // 対象ユーザーか判定
-                if (!IsTargetUser(currentConfig))
+                var userConfig = FindUserConfig(currentConfig, currentUserName);
+                if (userConfig == null)
                 {
-                    _logger.LogInformation("Current user is not in target users list. Skipping logout check.");
+                    _logger.LogInformation("Current user '{user}' is not in target users list. Skipping logout check.",
+                        currentUserName ?? "(none)");
                     await Task.Delay(currentConfig.CheckIntervalSeconds * 1000, stoppingToken);
                     continue;
                 }
 
+                // ステータスログ
+                var sessionManager = GetOrCreateSessionManager(currentUserName!);
+                sessionManager.LogStatus();
+
                 // ログアウト条件判定
-                if (_sessionManager.ShouldLogout(currentConfig))
+                if (sessionManager.ShouldLogout(userConfig, currentConfig.EnableLogout))
                 {
-                    _logger.LogCritical("Logout condition detected. Logging out user...");
+                    _logger.LogCritical("Logout condition detected for user '{user}'. Logging out...", currentUserName);
                     await _logoutHandler.LogoutUserWithWarningAsync(
                         "ご使用のセッションが終了します。\n" +
                         "設定された条件に基づいてログアウトします。"
                     );
-                    // ログアウト後の累積はユーザーログアウト検出時（次のチェック）に行われる
                 }
 
                 await Task.Delay(currentConfig.CheckIntervalSeconds * 1000, stoppingToken);
@@ -145,43 +126,33 @@ public class Worker : BackgroundService
     }
 
     /// <summary>
-    /// 現在のユーザーが強制ログアウト対象ユーザーか判定
+    /// ユーザー名に対応する SessionManager を取得または新規作成
     /// </summary>
-    private bool IsTargetUser(SessionConfig config)
+    private SessionManager GetOrCreateSessionManager(string userName)
     {
-        // TargetUsers が空の場合は誰も対象にしない
-        if (config.TargetUsers == null || config.TargetUsers.Count == 0)
+        if (!_sessionManagers.TryGetValue(userName, out var manager))
         {
-            return false;
+            var logger = _loggerFactory.CreateLogger($"SessionManager[{userName}]");
+            manager = new SessionManager(logger);
+            _sessionManagers[userName] = manager;
         }
+        return manager;
+    }
 
-        try
-        {
-            var sessionUserName = WindowsSessionHelper.GetSessionUserName();
-            var sessionUserDomain = WindowsSessionHelper.GetSessionUserDomain();
+    /// <summary>
+    /// 現在のユーザーの UserConfig を取得（対象外なら null）
+    /// </summary>
+    private UserConfig? FindUserConfig(SessionConfig config, string? userName)
+    {
+        if (string.IsNullOrEmpty(userName) || config.Users == null || config.Users.Count == 0)
+            return null;
 
-            if (string.IsNullOrEmpty(sessionUserName))
-                return false;
+        var domain = WindowsSessionHelper.GetSessionUserDomain() ?? string.Empty;
 
-            var sessionUserWithDomain = $"{sessionUserDomain}\\{sessionUserName}";
-
-            foreach (var targetUser in config.TargetUsers)
-            {
-                if (string.Equals(targetUser, sessionUserName, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(targetUser, sessionUserWithDomain, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(targetUser, $"{sessionUserName}@{sessionUserDomain}", StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error checking target user. Skipping logout check.");
-            return false;
-        }
+        return config.Users.FirstOrDefault(u =>
+            string.Equals(u.UserName, userName, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(u.UserName, $"{domain}\\{userName}", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(u.UserName, $"{userName}@{domain}", StringComparison.OrdinalIgnoreCase));
     }
 
     public override void Dispose()
